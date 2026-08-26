@@ -3,13 +3,14 @@ import argparse
 import json
 import os
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import cloudscraper
+import requests.exceptions
 
 
 API_BASE = "https://domain-api.digitalplat.org/api/v1"
@@ -34,11 +35,20 @@ class DomainRecord:
 class DigitalPlatClient:
     def __init__(self, api_token: str, api_base: str) -> None:
         self.api_base = api_base.rstrip("/")
+        # cloudscraper solves the Cloudflare JS challenge that blocks plain
+        # urllib/requests calls. It sets its own browser-like User-Agent, so
+        # we do not override that header here.
+        self.session = cloudscraper.create_scraper(
+            browser={
+                "browser": "chrome",
+                "platform": "windows",
+                "mobile": False,
+            }
+        )
         self.headers = {
             "Authorization": f"Bearer {api_token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "digitalplat-auto-renew/1.0",
         }
 
     def _request(
@@ -47,28 +57,32 @@ class DigitalPlatClient:
         method: str = "GET",
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        body = None if payload is None else json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.api_base}{path}",
-            data=body,
-            headers=self.headers,
-            method=method,
-        )
+        url = f"{self.api_base}{path}"
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                text = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"DigitalPlat HTTP {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
+            response = self.session.request(
+                method,
+                url,
+                json=payload,
+                headers=self.headers,
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as exc:
             raise RuntimeError(f"DigitalPlat network error: {exc}") from exc
+
+        text = response.text
+        status = response.status_code
+        if status >= 400:
+            snippet = text[:500] if text else ""
+            raise RuntimeError(f"DigitalPlat HTTP {status}: {snippet}")
 
         if not text:
             return {}
         try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"DigitalPlat returned non-JSON response: {text[:200]}") from exc
+            parsed = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"DigitalPlat returned non-JSON response (HTTP {status}): {text[:200]}"
+            ) from exc
         if not isinstance(parsed, dict):
             raise RuntimeError(f"DigitalPlat returned unexpected response: {parsed}")
         return parsed
@@ -106,8 +120,7 @@ class DigitalPlatClient:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Weekly DigitalPlat free-domain renewal helper.")
-    parser.add_argument("--state", default="state/domains-state.json", help="Path to state JSON file.")
-    parser.add_argument("--dry-run", action="store_true", help="Evaluate without renewing or writing state.")
+    parser.add_argument("--dry-run", action="store_true", help="Evaluate without renewing.")
     parser.add_argument("--fixture", help="Read a local DigitalPlat domain-list JSON fixture instead of calling the API.")
     return parser.parse_args()
 
@@ -148,17 +161,6 @@ def parse_domain_variable() -> list[str]:
     if duplicates:
         raise RuntimeError(f"DIGITALPLAT_DOMAINS contains duplicates: {', '.join(duplicates)}")
     return domains
-
-
-def load_state(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {"domains": {}}
-    return json.loads(path.read_text(encoding="utf-8-sig"))
-
-
-def save_state(path: Path, state: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def parse_datetime(value: Any) -> datetime:
@@ -231,41 +233,8 @@ def should_renew(record: DomainRecord, renew_before_days: int) -> bool:
     return record.days_remaining <= renew_before_days
 
 
-def update_state_for_record(
-    state: dict[str, Any],
-    record: DomainRecord,
-    action: str,
-    renew_before_days: int,
-) -> bool:
-    domains = state.setdefault("domains", {})
-    item = domains.setdefault(record.name, {})
-    new_item = {
-        "expiry_date": record.expiry_date.strftime(DATE_FORMAT),
-        "days_remaining": record.days_remaining,
-        "renew_before_days": renew_before_days,
-        "status": record.status,
-        "last_action": action,
-        "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }
-    changed = False
-    for key, value in new_item.items():
-        if item.get(key) != value:
-            item[key] = value
-            changed = True
-    return changed
-
-
-def remove_stale_domains(state: dict[str, Any], active_domains: set[str]) -> bool:
-    domains = state.setdefault("domains", {})
-    stale = [domain for domain in domains if domain not in active_domains]
-    for domain in stale:
-        del domains[domain]
-    return bool(stale)
-
-
 def main() -> int:
     args = parse_args()
-    state_path = Path(args.state).resolve()
     managed_names = parse_domain_variable()
     renew_before_days = optional_int_env("DIGITALPLAT_RENEW_BEFORE_DAYS", DEFAULT_RENEW_BEFORE_DAYS)
     renewal_type = os.getenv("DIGITALPLAT_RENEWAL_TYPE") or "free"
@@ -281,8 +250,6 @@ def main() -> int:
         raw_domains = client.list_domains()
 
     domain_map = {normalize_domain(raw).name: raw for raw in raw_domains}
-    state = load_state(state_path)
-    state_changed = remove_stale_domains(state, set(managed_names))
     renewed_count = 0
     errors: list[str] = []
 
@@ -314,7 +281,6 @@ def main() -> int:
 
         if not should_renew(record, renew_before_days):
             print(f"[SKIP] {record.name} has not entered the renewal window.")
-            state_changed = update_state_for_record(state, record, "skipped", renew_before_days) or state_changed
             continue
 
         if args.dry_run:
@@ -330,19 +296,13 @@ def main() -> int:
             renewed_record = normalize_domain(renewed_raw)
         except Exception as exc:
             errors.append(f"{record.name}: renewal failed: {exc}")
-            state_changed = update_state_for_record(state, record, "renew_failed", renew_before_days) or state_changed
             continue
 
         renewed_count += 1
-        state_changed = update_state_for_record(state, renewed_record, "renewed", renew_before_days) or state_changed
         print(
             f"[RENEWED] {renewed_record.name} new_expiry_date={renewed_record.expiry_date.strftime(DATE_FORMAT)} "
             f"days_remaining={renewed_record.days_remaining}"
         )
-
-    if state_changed and not args.dry_run:
-        save_state(state_path, state)
-        print(f"[WRITE] Updated {state_path}")
 
     if errors:
         for error in errors:

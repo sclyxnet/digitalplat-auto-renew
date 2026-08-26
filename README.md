@@ -26,23 +26,11 @@
 
 本项目使用 Bearer Token 调用 DigitalPlat API。
 
-### 第 1 步：把仓库设为私有仓库
-
-**1-1. 打开 GitHub Importer**
+### 第 1 步：Fork 本仓库
 
 1. 登录 GitHub。
-2. 打开：<https://github.com/new/import>
-
-**1-2. 填写导入信息**
-
-| 字段                                | 填什么                                                         |
-| --------------------------------- | ----------------------------------------------------------- |
-| `Your old repository's clone URL` | `https://github.com/OUBIGFA/DigitalPlat-Domains-auto-renew` |
-| `Owner`                           | 你的 GitHub 账号                                                |
-| `Repository name`                 | 你的仓库名，例如 `my-digitalplat-auto-renew`                        |
-| `Privacy`                         | 选 `Private`                                                 |
-
-然后点击 `Begin import`，通常几十秒到几分钟会完成。
+2. 打开：<https://github.com/xz0609/digitalplat-auto-renew/fork>
+3. 点击 `Create fork`，通常几秒到几十秒完成。
 
 ### 第 2 步：配置 GitHub Secret 和 Variable
 
@@ -53,9 +41,6 @@
 添加 Secret：
 
 * `DIGITALPLAT_API_TOKEN`
-
-添加 Variable：
-
 * `DIGITALPLAT_DOMAINS`
 
 `DIGITALPLAT_DOMAINS` 一行一个域名：
@@ -65,6 +50,8 @@ example.dpdns.org
 example.qzz.io
 ```
 
+> `DIGITALPLAT_DOMAINS` 故意放在 Secret 而不是 Variable，是为了避免域名以明文出现在 Actions 运行日志里；脚本运行时也会对每个域名调用 `::add-mask::` 进一步脱敏。
+
 可选 Variable：
 
 * `DIGITALPLAT_RENEW_BEFORE_DAYS`：默认 `120`
@@ -72,8 +59,6 @@ example.qzz.io
 ### 第 3 步：手动运行一次
 
 打开 GitHub 的 `Actions`，手动运行 `DigitalPlat Auto Renew`。
-
-第一次运行会检查域名并生成 `state/domains-state.json`。之后工作流每周一 UTC 04:17 自动运行一次。
 
 ## 续期规则
 
@@ -94,8 +79,6 @@ example.qzz.io
 * `scripts/digitalplat_auto_renew.py`：续期脚本
 
 * `.github/workflows/digitalplat-auto-renew.yml`：每周 GitHub Actions 工作流
-
-* `state/domains-state.json`：运行后自动生成的状态文件
 
 ## API 说明
 

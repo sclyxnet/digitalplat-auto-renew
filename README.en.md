@@ -26,23 +26,11 @@ Create an API Key, typically starting with `dp_live_...`. Documentation:
 
 This project uses Bearer Token to call the DigitalPlat API.
 
-### Step 1: Make the Repository Private
-
-**1-1. Open GitHub Importer**
+### Step 1: Fork This Repository
 
 1. Sign in to GitHub.
-2. Open: <https://github.com/new/import>
-
-**1-2. Fill in import details**
-
-| Field | Value |
-| --- | --- |
-| `Your old repository's clone URL` | `https://github.com/OUBIGFA/DigitalPlat-Domains-auto-renew` |
-| `Owner` | Your GitHub account |
-| `Repository name` | Your repo name, e.g. `my-digitalplat-auto-renew` |
-| `Privacy` | Select `Private` |
-
-Then click `Begin import`. It usually takes tens of seconds to a few minutes.
+2. Open: <https://github.com/xz0609/digitalplat-auto-renew/fork>
+3. Click `Create fork`. It usually takes a few seconds to tens of seconds.
 
 ### Step 2: Configure GitHub Secret and Variable
 
@@ -53,9 +41,6 @@ Navigate to:
 Add a Secret:
 
 - `DIGITALPLAT_API_TOKEN`
-
-Add a Variable:
-
 - `DIGITALPLAT_DOMAINS`
 
 `DIGITALPLAT_DOMAINS` — one domain per line:
@@ -65,6 +50,8 @@ example.dpdns.org
 example.qzz.io
 ```
 
+> `DIGITALPLAT_DOMAINS` is intentionally stored as a Secret (not a Variable) so the domains never appear in plain text in the Actions log; the workflow also calls `::add-mask::` on each domain for further redaction.
+
 Optional Variable:
 
 - `DIGITALPLAT_RENEW_BEFORE_DAYS`: default `120`
@@ -72,8 +59,6 @@ Optional Variable:
 ### Step 3: Run Once Manually
 
 Go to the `Actions` tab in your GitHub repository and manually run `DigitalPlat Auto Renew`.
-
-The first run checks the domains and generates `state/domains-state.json`. After that, the workflow runs automatically every Monday at UTC 04:17.
 
 ## Renewal Rules
 
@@ -90,7 +75,6 @@ If a domain hasn't entered the renewal window yet, the script only logs the chec
 
 - `scripts/digitalplat_auto_renew.py`: The renewal script
 - `.github/workflows/digitalplat-auto-renew.yml`: Weekly GitHub Actions workflow
-- `state/domains-state.json`: Auto-generated state file after execution
 
 ## API Reference
 
