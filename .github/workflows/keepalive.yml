@@ -1,0 +1,62 @@
+name: Keepalive
+
+on:
+  schedule:
+    # 每月 1 号 / 15 号 UTC 03:37（避开整点高峰；15 天间隔 = 60 天内有 4 次机会）
+    - cron: "37 3 1,15 * *"
+  # 允许在 Actions 页面手动触发：推上去后先手动跑一次验证
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # 关键：enable 接口需要 actions: write，read 权限什么都做不了
+      actions: write
+    steps:
+      - name: Reset 60-day inactivity timer for all workflows
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # 原理：对 workflow 调一次 enable，即使它当前已是 enabled 状态，
+          # 该调用也会把 GitHub 的「60 天无活动」计时器归零。
+          # 相比制造 dummy commit：不污染 git 历史、不怕分支保护，
+          # 还能把已经被禁用的 workflow 救回来。
+          list=$(gh api --paginate "repos/$REPO/actions/workflows?per_page=100" \
+                   --jq '.workflows[] | "\(.id) \(.state)"')
+
+          if [ -z "$list" ]; then
+            echo "::error::no workflow found in $REPO"
+            exit 1
+          fi
+
+          ok=0; failed=0; skipped=0
+          while IFS=' ' read -r id state; do
+            # 手动禁用的不要碰，只处理「已启用」和「因不活动被禁用」两种
+            if [ "$state" = "disabled_manually" ]; then
+              echo "skip (disabled manually): id=$id"
+              skipped=$((skipped + 1))
+              continue
+            fi
+            if gh api -X PUT "repos/$REPO/actions/workflows/$id/enable" --silent; then
+              echo "timer reset: id=$id ($state)"
+              ok=$((ok + 1))
+            else
+              echo "::warning::failed to enable id=$id ($state)"
+              failed=$((failed + 1))
+            fi
+          done <<< "$list"
+
+          echo "done: ok=$ok failed=$failed skipped=$skipped"
+          [ "$failed" -eq 0 ] || exit 1
